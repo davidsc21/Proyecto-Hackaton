@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 import sys
 
@@ -10,137 +11,166 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.database import get_connection, test_connection
+from src.supabase_client import get_server_client, test_connection
 
 st.set_page_config(page_title="Sismos · Santander", page_icon="🌎", layout="wide")
 PAGE_SIZE = 100
+SUMMARY_PAGE_SIZE = 1000
+SISMO_COLUMNS = (
+    "id_sismo,fecha_hora_utc,latitud,longitud,profundidad_km,magnitud,"
+    "id_tipo_magnitud,fases,rms_seg,gap_grados,error_lat_km,error_long_km,"
+    "error_prof_km,id_region"
+)
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+def _client_or_raise():
+    client = get_server_client()
+    if client is None:
+        raise RuntimeError("Configura SUPABASE_URL y SUPABASE_SERVICE_ROLE_KEY en el servidor.")
+    return client
+
+
+@st.cache_data(ttl=600, show_spinner="Consultando los sismos existentes en Supabase...")
 def load_summary() -> dict:
-    connection = get_connection()
-    connection.set_session(readonly=True)
-    try:
-        with connection.cursor() as cur:
-            cur.execute("""
-                select count(*), min(magnitud), max(magnitud), min(fecha_hora_utc), max(fecha_hora_utc),
-                       avg(magnitud), avg(profundidad_km)
-                from public.sismo
-            """)
-            total, min_magnitude, max_magnitude, first_date, last_date, mean_magnitude, mean_depth = cur.fetchone()
-            cur.execute("""
-                select coalesce(t.nombre, 'Sin tipo'), count(*)
-                from public.sismo s
-                left join public.tipo_magnitud t on t.id_tipo_magnitud = s.id_tipo_magnitud
-                group by t.nombre order by count(*) desc, t.nombre
-            """)
-            by_type = cur.fetchall()
-            cur.execute("""
-                select extract(year from fecha_hora_utc)::integer as anio, count(*) as sismos
-                from public.sismo
-                group by anio order by anio
-            """)
-            by_year = cur.fetchall()
+    """Load existing sismo rows in read-only pages and calculate display summaries."""
+    client = _client_or_raise()
+    first = client.table("sismo").select(
+        "fecha_hora_utc,magnitud,profundidad_km,id_tipo_magnitud", count="exact"
+    ).order("id_sismo").range(0, SUMMARY_PAGE_SIZE - 1).execute()
+    rows = list(first.data or [])
+    total = first.count if first.count is not None else len(rows)
+
+    def fetch_summary_page(start: int) -> list[dict]:
+        end = min(start + SUMMARY_PAGE_SIZE, total) - 1
+        page = client.table("sismo").select(
+            "fecha_hora_utc,magnitud,profundidad_km,id_tipo_magnitud"
+        ).order("id_sismo").range(start, end).execute()
+        return page.data or []
+
+    page_starts = range(SUMMARY_PAGE_SIZE, total, SUMMARY_PAGE_SIZE)
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        for batch in pool.map(fetch_summary_page, page_starts):
+            rows.extend(batch)
+
+    if len(rows) != total:
+        raise RuntimeError("La API no devolvió todos los registros para el resumen.")
+    data = pd.DataFrame(rows)
+    if data.empty:
         return {
-            "total": total or 0,
-            "min_magnitude": float(min_magnitude) if min_magnitude is not None else None,
-            "first_date": first_date,
-            "last_date": last_date,
-            "mean_magnitude": float(mean_magnitude) if mean_magnitude is not None else None,
-            "max_magnitude": float(max_magnitude) if max_magnitude is not None else None,
-            "mean_depth": float(mean_depth) if mean_depth is not None else None,
-            "by_type": pd.DataFrame(by_type, columns=["Tipo de magnitud", "Sismos"]),
-            "by_year": pd.DataFrame(by_year, columns=["Año", "Sismos"]),
+            "total": 0, "min_magnitude": None, "max_magnitude": None,
+            "first_date": None, "last_date": None, "mean_magnitude": None,
+            "mean_depth": None,
+            "by_type": pd.DataFrame(columns=["id_tipo_magnitud", "Sismos"]),
+            "by_year": pd.DataFrame(columns=["Año", "Sismos"]),
         }
-    finally:
-        connection.close()
+
+    data["fecha_hora_utc"] = pd.to_datetime(data["fecha_hora_utc"], utc=True, errors="coerce")
+    data["magnitud"] = pd.to_numeric(data["magnitud"], errors="coerce")
+    data["profundidad_km"] = pd.to_numeric(data["profundidad_km"], errors="coerce")
+    by_type = (
+        data.groupby("id_tipo_magnitud", dropna=False)
+        .size().rename("Sismos").reset_index()
+    )
+    years = data.dropna(subset=["fecha_hora_utc"]).assign(
+        Año=lambda frame: frame["fecha_hora_utc"].dt.year
+    )
+    by_year = years.groupby("Año").size().rename("Sismos").reset_index()
+    magnitudes = data["magnitud"].dropna()
+    depths = data["profundidad_km"].dropna()
+    dates = data["fecha_hora_utc"].dropna()
+    return {
+        "total": total,
+        "min_magnitude": float(magnitudes.min()) if not magnitudes.empty else None,
+        "max_magnitude": float(magnitudes.max()) if not magnitudes.empty else None,
+        "first_date": dates.min() if not dates.empty else None,
+        "last_date": dates.max() if not dates.empty else None,
+        "mean_magnitude": float(magnitudes.mean()) if not magnitudes.empty else None,
+        "mean_depth": float(depths.mean()) if not depths.empty else None,
+        "by_type": by_type,
+        "by_year": by_year,
+    }
 
 
-@st.cache_data(ttl=60, show_spinner=False)
+@st.cache_data(ttl=600, show_spinner=False)
 def load_catalog_tables() -> dict[str, pd.DataFrame]:
-    connection = get_connection()
-    connection.set_session(readonly=True)
-    try:
-        return {
-            "regiones": pd.read_sql_query(
-                "select id_region, nombre from public.region order by id_region", connection
-            ),
-            "tipos": pd.read_sql_query(
-                "select id_tipo_magnitud, nombre from public.tipo_magnitud order by id_tipo_magnitud", connection
-            ),
-        }
-    finally:
-        connection.close()
-
-
-@st.cache_data(ttl=60, show_spinner=False)
-def load_sismos(page: int, region_id: int | None, min_magnitude: float, max_magnitude: float) -> pd.DataFrame:
-    connection = get_connection()
-    connection.set_session(readonly=True)
-    try:
-        query = """
-            select s.id_sismo as "ID sismo",
-                   s.fecha_hora_utc as "Fecha y hora UTC",
-                   s.latitud as "Latitud",
-                   s.longitud as "Longitud",
-                   s.profundidad_km as "Profundidad (km)",
-                   s.magnitud as "Magnitud",
-                   t.nombre as "Tipo de magnitud",
-                   s.fases as "Fases",
-                   s.rms_seg as "RMS (s)",
-                   s.gap_grados as "Gap (°)",
-                   s.error_lat_km as "Error latitud (km)",
-                   s.error_long_km as "Error longitud (km)",
-                   s.error_prof_km as "Error profundidad (km)",
-                   r.nombre as "Región"
-            from public.sismo s
-            left join public.tipo_magnitud t on t.id_tipo_magnitud = s.id_tipo_magnitud
-            left join public.region r on r.id_region = s.id_region
-            where s.magnitud between %s and %s
-              and (%s is null or s.id_region = %s)
-            order by s.fecha_hora_utc desc, s.id_sismo desc
-            limit %s offset %s
-        """
-        offset = (page - 1) * PAGE_SIZE
-        return pd.read_sql_query(
-            query,
-            connection,
-            params=(min_magnitude, max_magnitude, region_id, region_id, PAGE_SIZE, offset),
-        )
-    finally:
-        connection.close()
+    client = _client_or_raise()
+    regions = client.table("region").select("id_region,nombre").order("id_region").execute()
+    types = client.table("tipo_magnitud").select(
+        "id_tipo_magnitud,nombre"
+    ).order("id_tipo_magnitud").execute()
+    return {
+        "regiones": pd.DataFrame(regions.data or [], columns=["id_region", "nombre"]),
+        "tipos": pd.DataFrame(types.data or [], columns=["id_tipo_magnitud", "nombre"]),
+    }
 
 
 @st.cache_data(ttl=60, show_spinner=False)
 def count_sismos(region_id: int | None, min_magnitude: float, max_magnitude: float) -> int:
-    connection = get_connection()
-    connection.set_session(readonly=True)
-    try:
-        with connection.cursor() as cur:
-            cur.execute(
-                "select count(*) from public.sismo where magnitud between %s and %s and (%s is null or id_region = %s)",
-                (min_magnitude, max_magnitude, region_id, region_id),
-            )
-            return cur.fetchone()[0]
-    finally:
-        connection.close()
+    query = _client_or_raise().table("sismo").select("id_sismo", count="exact")
+    query = query.gte("magnitud", min_magnitude).lte("magnitud", max_magnitude)
+    if region_id is not None:
+        query = query.eq("id_region", region_id)
+    result = query.limit(1).execute()
+    return int(result.count or 0)
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def load_sismos(page: int, region_id: int | None, min_magnitude: float, max_magnitude: float) -> pd.DataFrame:
+    query = _client_or_raise().table("sismo").select(SISMO_COLUMNS)
+    query = query.gte("magnitud", min_magnitude).lte("magnitud", max_magnitude)
+    if region_id is not None:
+        query = query.eq("id_region", region_id)
+    offset = max(0, page - 1) * PAGE_SIZE
+    result = (
+        query.order("fecha_hora_utc", desc=True)
+        .order("id_sismo", desc=True)
+        .range(offset, offset + PAGE_SIZE - 1)
+        .execute()
+    )
+    return pd.DataFrame(result.data or [])
+
+
+def _display_sismos(records: pd.DataFrame, catalogs: dict[str, pd.DataFrame]) -> pd.DataFrame:
+    if records.empty:
+        return records
+    types = catalogs["tipos"].rename(columns={"nombre": "nombre_tipo"})
+    regions = catalogs["regiones"].rename(columns={"nombre": "nombre_region"})
+    result = records.merge(types, on="id_tipo_magnitud", how="left")
+    result = result.merge(regions, on="id_region", how="left")
+    return result.rename(columns={
+        "id_sismo": "ID sismo",
+        "fecha_hora_utc": "Fecha y hora UTC",
+        "latitud": "Latitud",
+        "longitud": "Longitud",
+        "profundidad_km": "Profundidad (km)",
+        "magnitud": "Magnitud",
+        "nombre_tipo": "Tipo de magnitud",
+        "nombre_region": "Región",
+        "fases": "Fases",
+        "rms_seg": "RMS (s)",
+        "gap_grados": "Gap (°)",
+        "error_lat_km": "Error latitud (km)",
+        "error_long_km": "Error longitud (km)",
+        "error_prof_km": "Error profundidad (km)",
+    })
 
 
 def main() -> None:
     st.title("Sismos de Santander")
-    st.caption("Consulta de las tablas existentes en Supabase PostgreSQL: sismo, region y tipo_magnitud.")
+    st.caption("Datos consultados en modo lectura desde las tablas existentes: sismo, region y tipo_magnitud.")
 
-    connected, message = test_connection()
-    if not connected:
-        st.error(f"No fue posible conectar con Supabase: {message}")
-        st.info("Verifica la variable de conexión PostgreSQL configurada para el proyecto.")
+    server_client = get_server_client()
+    connected, _ = test_connection(server_client)
+    if server_client is None or not connected:
+        st.error("No se pudo conectar con Supabase. Revisa SUPABASE_URL y las credenciales configuradas en el servidor.")
         st.stop()
 
     try:
-        summary = load_summary()
-        catalogs = load_catalog_tables()
+        with st.spinner("Cargando datos de Supabase..."):
+            summary = load_summary()
+            catalogs = load_catalog_tables()
     except Exception as exc:
-        st.error(f"No se pudieron leer las tablas de Supabase: {exc}")
+        st.error(f"No se pudieron leer las tablas existentes ({type(exc).__name__}). Revisa los permisos de lectura.")
         st.stop()
 
     st.success("Conexión activa · consultas de solo lectura")
@@ -160,48 +190,77 @@ def main() -> None:
         left, right = st.columns(2)
         with left:
             st.subheader("Registros por año")
-            st.bar_chart(summary["by_year"].set_index("Año"), use_container_width=True)
+            if not summary["by_year"].empty:
+                st.bar_chart(summary["by_year"].set_index("Año"), width="stretch")
+            else:
+                st.info("No hay registros para mostrar.")
         with right:
             st.subheader("Registros por tipo de magnitud")
-            st.dataframe(summary["by_type"], use_container_width=True, hide_index=True)
+            by_type = summary["by_type"].merge(
+                catalogs["tipos"], on="id_tipo_magnitud", how="left"
+            )
+            by_type["Tipo de magnitud"] = by_type["nombre"].fillna("Sin tipo")
+            st.dataframe(
+                by_type[["Tipo de magnitud", "Sismos"]],
+                width="stretch",
+                hide_index=True,
+            )
 
     with tab_sismos:
         st.subheader("Tabla sismo")
-        filters = st.columns([2, 2, 1])
-        min_mag = float(summary["min_magnitude"] or 0.0)
-        max_mag = float(summary["max_magnitude"] or min_mag)
-        magnitude_range = filters[0].slider(
-            "Rango de magnitud", min_value=min_mag, max_value=max_mag,
-            value=(min_mag, max_mag), step=0.1,
-        )
-        regions = catalogs["regiones"]
-        region_options = {"Todas": None}
-        region_options.update({row["nombre"]: int(row["id_region"]) for _, row in regions.iterrows()})
-        selected_region_name = filters[1].selectbox("Región", list(region_options))
-        selected_region = region_options[selected_region_name]
-        total_filtered = count_sismos(selected_region, magnitude_range[0], magnitude_range[1])
-        total_pages = max(1, (total_filtered + PAGE_SIZE - 1) // PAGE_SIZE)
-        page = filters[2].number_input("Página", min_value=1, max_value=total_pages, value=1, step=1)
-        try:
-            records = load_sismos(int(page), selected_region, magnitude_range[0], magnitude_range[1])
-            st.dataframe(records, use_container_width=True, hide_index=True)
-            start_row = (int(page) - 1) * PAGE_SIZE + 1 if total_filtered else 0
-            end_row = min(int(page) * PAGE_SIZE, total_filtered)
-            st.caption(f"Mostrando {start_row:,}–{end_row:,} de {total_filtered:,} registros · {PAGE_SIZE} por página.")
-        except Exception as exc:
-            st.error(f"No se pudieron cargar los registros de sismo: {exc}")
+        if summary["total"] == 0 or summary["min_magnitude"] is None:
+            st.info("La tabla sismo no contiene registros para mostrar.")
+        else:
+            filters = st.columns([2, 2])
+            min_mag = summary["min_magnitude"]
+            max_mag = summary["max_magnitude"]
+            if min_mag < max_mag:
+                magnitude_range = filters[0].slider(
+                    "Rango de magnitud", min_value=min_mag, max_value=max_mag,
+                    value=(min_mag, max_mag), step=0.1,
+                )
+            else:
+                magnitude_range = (min_mag, max_mag)
+                filters[0].caption(f"Magnitud disponible: {min_mag:g}")
+
+            regions = catalogs["regiones"]
+            region_options = {"Todas": None}
+            region_options.update({row["nombre"]: int(row["id_region"]) for _, row in regions.iterrows()})
+            selected_region_name = filters[1].selectbox("Región", list(region_options))
+            selected_region = region_options[selected_region_name]
+            total_filtered = count_sismos(selected_region, magnitude_range[0], magnitude_range[1])
+            total_pages = max(1, (total_filtered + PAGE_SIZE - 1) // PAGE_SIZE)
+            current_page = min(max(int(st.session_state.get("sismos_page", 1)), 1), total_pages)
+            st.session_state["sismos_page"] = current_page
+            previous_col, page_col, next_col = st.columns([1, 3, 1])
+            if previous_col.button("‹", disabled=current_page <= 1, key="sismos_previous"):
+                st.session_state["sismos_page"] = current_page - 1
+                st.rerun()
+            page_col.caption(f"Página {current_page} / {total_pages}")
+            if next_col.button("›", disabled=current_page >= total_pages, key="sismos_next"):
+                st.session_state["sismos_page"] = current_page + 1
+                st.rerun()
+
+            try:
+                records = load_sismos(current_page, selected_region, magnitude_range[0], magnitude_range[1])
+                records = _display_sismos(records, catalogs)
+                st.dataframe(records, width="stretch", hide_index=True)
+                start_row = (current_page - 1) * PAGE_SIZE + 1 if total_filtered else 0
+                end_row = min(current_page * PAGE_SIZE, total_filtered)
+                st.caption(f"Mostrando {start_row:,}–{end_row:,} de {total_filtered:,} registros · {PAGE_SIZE} por página.")
+            except Exception as exc:
+                st.error(f"No se pudieron cargar los sismos ({type(exc).__name__}).")
 
     with tab_regiones:
         st.subheader("Tabla region")
-        st.dataframe(catalogs["regiones"], use_container_width=True, hide_index=True)
+        st.dataframe(catalogs["regiones"], width="stretch", hide_index=True)
         st.caption(f"{len(catalogs['regiones']):,} registros existentes.")
 
     with tab_tipos:
         st.subheader("Tabla tipo_magnitud")
-        st.dataframe(catalogs["tipos"], use_container_width=True, hide_index=True)
+        st.dataframe(catalogs["tipos"], width="stretch", hide_index=True)
         st.caption(f"{len(catalogs['tipos']):,} registros existentes.")
 
 
 if __name__ == "__main__":
     main()
-
