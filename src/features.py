@@ -25,7 +25,28 @@ def _distance_km(lat1, lon1, lat2, lon2) -> float:
 
 
 def load_earthquakes(path: Path | None = None) -> pd.DataFrame:
+    # Primary data source is Supabase/PostgreSQL (table: sismo).
+    if path is None:
+        try:
+            from src.data_fetch import load_sismo
+
+            df = load_sismo()
+            if not df.empty:
+                return df
+        except Exception:  # noqa: BLE001
+            pass
+
     path = path or EARTHQUAKES_PATH
+    if not Path(path).exists():
+        try:
+            from src.data_fetch import load_sismo
+
+            df = load_sismo()
+            if not df.empty:
+                return df
+        except Exception:  # noqa: BLE001
+            pass
+
     df = pd.read_csv(path)
     df["time"] = pd.to_datetime(df["time"], utc=True, errors="coerce")
     df = df.dropna(subset=["latitude", "longitude", "magnitude"])

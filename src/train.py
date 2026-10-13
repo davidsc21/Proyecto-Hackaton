@@ -7,7 +7,8 @@ import argparse
 from src.features import build_and_save
 from src.model import train
 from src.supabase_client import get_client, test_connection
-from src.data_fetch import events_to_supabase, load_raw
+from src.data_fetch import load_sismo
+from src.database import seed_risk_zones, record_model_run
 
 
 def main(fetch_remote: bool = False):
@@ -19,37 +20,23 @@ def main(fetch_remote: bool = False):
     print("Training complete.")
     print("Metrics:", {k: v for k, v in metrics.items() if k != "classification_report"})
 
+    # Direct PostgreSQL sync (does not require REST API keys).
+    # Events stay in Supabase (public.sismo); only derived risk zones are stored.
+    try:
+        n_rz = seed_risk_zones(features)
+        print(f"Synced {n_rz} risk zones to PostgreSQL.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"PostgreSQL risk-zone sync failed: {exc}")
+    try:
+        record_model_run("RandomForest", metrics)
+        print("Recorded model run to PostgreSQL.")
+    except Exception as exc:  # noqa: BLE001
+        print(f"PostgreSQL model-run sync failed: {exc}")
+
+    # Optional: report Supabase REST status (no duplicate event sync; events live in public.sismo).
     client = get_client()
     ok, msg = test_connection(client)
     print(msg)
-    if ok:
-        try:
-            df = load_raw()
-            n = events_to_supabase(df, client)
-            print(f"Upserted {n} earthquakes to Supabase.")
-            records = []
-            for row in features.to_dict(orient="records"):
-                records.append(
-                    {
-                        "cell_id": row["cell_id"],
-                        "cell_lat": float(row["cell_lat"]),
-                        "cell_lon": float(row["cell_lon"]),
-                        "n_events": int(row["n_events"]),
-                        "max_magnitude": float(row["max_magnitude"]),
-                        "mean_magnitude": float(row["mean_magnitude"]),
-                        "mean_depth_km": float(row["mean_depth_km"]),
-                        "log_energy": float(row["log_energy"]),
-                        "events_per_year": float(row["events_per_year"]),
-                        "risk_level": row["risk_level"],
-                        "dist_to_mesa_km": float(row["dist_to_mesa_km"]),
-                        "dist_to_seismic_nest_km": float(row["dist_to_seismic_nest_km"]),
-                    }
-                )
-            for i in range(0, len(records), 500):
-                client.table("risk_zones").upsert(records[i : i + 500], on_conflict="cell_id").execute()
-            print(f"Upserted {len(records)} risk zones to Supabase.")
-        except Exception as exc:  # noqa: BLE001
-            print(f"Supabase sync failed: {exc}")
 
 
 if __name__ == "__main__":

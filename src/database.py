@@ -96,3 +96,116 @@ def seed_earthquakes(csv_path: str) -> int:
             return cur.fetchone()[0]
     finally:
         conn.close()
+
+
+def seed_risk_zones(features_df) -> int:
+    import pandas as pd
+    from psycopg2.extras import execute_values
+
+    if isinstance(features_df, str):
+        features_df = pd.read_csv(features_df)
+    try:
+        from pathlib import Path as _Path
+
+        if isinstance(features_df, _Path):
+            features_df = pd.read_csv(features_df)
+    except Exception:  # noqa: BLE001
+        pass
+
+    if "cell_id" not in features_df.columns:
+        features_df = features_df.copy()
+        features_df["cell_id"] = features_df["cell_lat"].astype(str) + "_" + features_df["cell_lon"].astype(str)
+
+    conn = get_connection()
+    try:
+        rows = []
+        for r in features_df.to_dict(orient="records"):
+            rows.append(
+                (
+                    r.get("cell_id"),
+                    float(r["cell_lat"]),
+                    float(r["cell_lon"]),
+                    int(r.get("n_events", 0)),
+                    float(r.get("max_magnitude", 0.0)),
+                    float(r.get("mean_magnitude", 0.0)),
+                    float(r.get("mean_depth_km", 150.0)),
+                    float(r.get("log_energy", 0.0)),
+                    float(r.get("events_per_year", 0.0)),
+                    str(r.get("risk_level", "Low")),
+                    float(r.get("dist_to_mesa_km", 0.0)),
+                    float(r.get("dist_to_seismic_nest_km", 0.0)),
+                )
+            )
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                """
+                insert into public.risk_zones
+                    (cell_id, cell_lat, cell_lon, n_events, max_magnitude, mean_magnitude,
+                     mean_depth_km, log_energy, events_per_year, risk_level,
+                     dist_to_mesa_km, dist_to_seismic_nest_km)
+                values %s
+                on conflict (cell_id) do update set
+                    cell_lat = excluded.cell_lat,
+                    cell_lon = excluded.cell_lon,
+                    n_events = excluded.n_events,
+                    max_magnitude = excluded.max_magnitude,
+                    mean_magnitude = excluded.mean_magnitude,
+                    mean_depth_km = excluded.mean_depth_km,
+                    log_energy = excluded.log_energy,
+                    events_per_year = excluded.events_per_year,
+                    risk_level = excluded.risk_level,
+                    dist_to_mesa_km = excluded.dist_to_mesa_km,
+                    dist_to_seismic_nest_km = excluded.dist_to_seismic_nest_km,
+                    updated_at = now();
+                """,
+                rows,
+                page_size=200,
+            )
+        conn.commit()
+        with conn.cursor() as cur:
+            cur.execute("select count(*) from public.risk_zones")
+            return cur.fetchone()[0]
+    finally:
+        conn.close()
+
+
+def record_model_run(model_name: str = "RandomForest", metrics=None) -> None:
+    import json
+
+    payload = metrics if metrics is not None else {}
+    try:
+        payload = json.loads(json.dumps(payload, default=str))
+    except Exception:  # noqa: BLE001
+        payload = {"raw": str(payload)}
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                "insert into public.model_runs (model_name, metrics) values (%s, %s)",
+                (model_name, json.dumps(payload)),
+            )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def sync_all(features_df=None) -> dict:
+    from pathlib import Path
+
+    result = {}
+    try:
+        result["earthquakes"] = seed_earthquakes(
+            str(Path(__file__).resolve().parents[1] / "data" / "raw" / "earthquakes_santander.csv")
+        )
+    except Exception as exc:  # noqa: BLE001
+        result["earthquakes_error"] = str(exc)
+    try:
+        if features_df is None:
+            from src.features import aggregate_features, load_earthquakes
+
+            features_df = aggregate_features(load_earthquakes())
+        result["risk_zones"] = seed_risk_zones(features_df)
+    except Exception as exc:  # noqa: BLE001
+        result["risk_zones_error"] = str(exc)
+    return result

@@ -30,7 +30,7 @@ def test_connection(client=None) -> tuple[bool, str]:
     if client is None:
         return False, "SUPABASE_URL / SUPABASE_KEY not configured (offline mode)."
     try:
-        client.table("earthquakes").select("event_id").limit(1).execute()
+        client.table("sismo").select("id_sismo").limit(1).execute()
         return True, "Connected to Supabase."
     except Exception as exc:
         return False, f"Supabase connection failed: {exc}"
