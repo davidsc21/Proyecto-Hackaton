@@ -19,7 +19,6 @@ def main(fetch_remote: bool = False):
     print("Training complete.")
     print("Metrics:", {k: v for k, v in metrics.items() if k != "classification_report"})
 
-    # Optional Supabase sync
     client = get_client()
     ok, msg = test_connection(client)
     print(msg)
@@ -28,7 +27,6 @@ def main(fetch_remote: bool = False):
             df = load_raw()
             n = events_to_supabase(df, client)
             print(f"Upserted {n} earthquakes to Supabase.")
-            # Upsert risk zones
             records = []
             for row in features.to_dict(orient="records"):
                 records.append(

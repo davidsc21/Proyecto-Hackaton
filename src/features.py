@@ -18,7 +18,6 @@ from src.config import (
 
 
 def _distance_km(lat1, lon1, lat2, lon2) -> float:
-    # Equirectangular approximation, good enough for small distances.
     r = 6371.0
     x = math.radians(lon2 - lon1) * math.cos(math.radians((lat1 + lat2) / 2))
     y = math.radians(lat2 - lat1)
@@ -84,7 +83,6 @@ def aggregate_features(df: pd.DataFrame, cell: float = CELL_SIZE_DEG) -> pd.Data
     merged["years_active"] = merged["years_active"].fillna(0).astype(int)
     merged["sum_energy"] = merged["sum_energy"].fillna(0.0)
 
-    # Risk labelling (heuristic thresholds for Santander seismicity).
     def label(row):
         if row["max_magnitude"] >= 4.5 or row["n_events"] >= 10:
             return "High"
@@ -94,7 +92,6 @@ def aggregate_features(df: pd.DataFrame, cell: float = CELL_SIZE_DEG) -> pd.Data
 
     merged["risk_level"] = merged.apply(label, axis=1)
 
-    # Distances that help the model generalise to new points.
     merged["dist_to_mesa_km"] = merged.apply(
         lambda r: _distance_km(r["cell_lat"], r["cell_lon"], MESA_CENTER[0], MESA_CENTER[1]), axis=1
     )

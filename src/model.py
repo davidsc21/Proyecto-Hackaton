@@ -73,7 +73,6 @@ def load_model():
 
 
 def predict(X: pd.DataFrame | None = None, rows=None):
-    # lazy import pandas to avoid hard dependency at module import
     import pandas as pd
 
     bundle = load_model()

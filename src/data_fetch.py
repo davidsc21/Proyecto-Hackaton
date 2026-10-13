@@ -14,7 +14,6 @@ import requests
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 RAW_DIR = PROJECT_ROOT / "data" / "raw"
 
-# Rough bounding box covering the department of Santander.
 SANTANDER_BBOX = {
     "minlatitude": 5.7,
     "maxlatitude": 8.5,
@@ -22,7 +21,6 @@ SANTANDER_BBOX = {
     "maxlongitude": -72.2,
 }
 
-# Finer focus around Mesa de los Santos.
 MESA_BBOX = {
     "minlatitude": 6.4,
     "maxlatitude": 7.2,
@@ -126,7 +124,6 @@ def events_to_supabase(df: pd.DataFrame, client) -> int:
                 "url": row.get("url"),
             }
         )
-    # Supabase client upsert in chunks to avoid payload limits.
     total = 0
     chunk = 500
     for i in range(0, len(records), chunk):

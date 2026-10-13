@@ -42,6 +42,23 @@ python -m src.train --fetch   # vuelve a descargar desde USGS
 streamlit run app.py
 ```
 
+## Deploy en Render
+
+La app ya incluye `Procfile`, `runtime.txt` y `render.yaml`.
+
+1. Sube este proyecto a GitHub.
+2. En Render crea un **Web Service** desde el repositorio.
+3. Configura las variables de entorno:
+   - `DATABASE_URL` = pooler de Supabase (recomendado para Render/IPv4)
+   - `DIRECT_DATABASE_URL` opcional
+   - `SUPABASE_URL`
+   - `SUPABASE_KEY` / `SUPABASE_SERVICE_ROLE_KEY` (opcional, para sync REST)
+4. Render ejecutará `pip install -r requirements.txt` y luego:
+
+   ```bash
+   streamlit run app.py --server.port $PORT --server.address 0.0.0.0 --server.headless true
+   ```
+
 ## Supabase
 
 1. Crear un proyecto en Supabase.

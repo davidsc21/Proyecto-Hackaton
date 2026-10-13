@@ -21,7 +21,7 @@ def get_client():
 
         _client = create_client(SUPABASE_URL, SUPABASE_KEY)
         return _client
-    except Exception:  # pragma: no cover - defensive
+    except Exception: 
         return None
 
 
@@ -32,5 +32,5 @@ def test_connection(client=None) -> tuple[bool, str]:
     try:
         client.table("earthquakes").select("event_id").limit(1).execute()
         return True, "Connected to Supabase."
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         return False, f"Supabase connection failed: {exc}"

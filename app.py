@@ -1,4 +1,3 @@
-"""Streamlit application for seismic-risk analysis in Santander, Colombia."""
 
 from __future__ import annotations
 
@@ -20,6 +19,7 @@ from src.config import EARTHQUAKES_PATH, FEATURES_PATH, MODEL_PATH, MESA_CENTER
 from src.features import FEATURE_COLUMNS, aggregate_features, load_earthquakes, build_and_save
 from src.model import FEATURE_COLUMNS as MODEL_FEATURES, load_model, predict, train
 from src.supabase_client import get_client, test_connection
+from src.database import test_connection as test_pg_connection, list_tables as list_pg_tables
 from src.data_fetch import load_raw
 
 st.set_page_config(
@@ -119,7 +119,7 @@ def main():
     client = get_client()
     connected, status_msg = test_connection(client)
 
-    # Sidebar
+    
     with st.sidebar:
         st.header("Estado")
         if connected:
@@ -138,7 +138,7 @@ def main():
 
     tabs = st.tabs(["Mapa de riesgo", "Datos sísmicos", "Modelo ML", "Predicción", "Supabase"])
 
-    # --- Tab 1: Risk map ---
+    
     with tabs[0]:
         col1, col2 = st.columns([3, 1])
         with col2:
@@ -164,7 +164,7 @@ def main():
         st.markdown("**Distribución de riesgo**")
         st.bar_chart(features["risk_level"].value_counts())
 
-    # --- Tab 2: Earthquake data ---
+    
     with tabs[1]:
         st.subheader("Eventos sísmicos (USGS) - Santander")
         st.dataframe(
@@ -184,7 +184,7 @@ def main():
             st.markdown("**Magnitudes**")
             st.bar_chart(earthquakes["magnitude"].round(1).value_counts().sort_index())
 
-    # --- Tab 3: Model ---
+    
     with tabs[2]:
         metrics = bundle.get("metrics", {})
         st.subheader("Métricas del modelo")
@@ -222,7 +222,7 @@ def main():
         imp = pd.Series(model.feature_importances_, index=MODEL_FEATURES).sort_values(ascending=True)
         st.bar_chart(imp)
 
-    # --- Tab 4: Prediction ---
+    
     with tabs[3]:
         st.subheader("Predecir riesgo para un punto / zona")
         col1, col2 = st.columns(2)
@@ -281,9 +281,16 @@ def main():
                         except Exception as exc:  # noqa: BLE001
                             st.warning(f"No se pudo guardar la predicción: {exc}")
 
-    # --- Tab 5: Supabase ---
+    
     with tabs[4]:
         st.subheader("Conexión con Supabase")
+        st.markdown("### Base de datos PostgreSQL directa")
+        pg_ok, pg_msg = test_pg_connection()
+        if pg_ok:
+            st.success(pg_msg)
+            st.write("Tablas disponibles:", list_pg_tables())
+        else:
+            st.warning(pg_msg)
         st.code("SUPABASE_URL / SUPABASE_KEY en archivo .env (ver .env.example)")
         if connected:
             st.success(status_msg)
