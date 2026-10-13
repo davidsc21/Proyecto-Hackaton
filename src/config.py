@@ -11,10 +11,14 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 load_dotenv(PROJECT_ROOT / ".env", override=False)
 
 SUPABASE_URL = os.getenv("SUPABASE_URL", "").strip()
+SUPABASE_SERVICE_ROLE_KEY = os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY", "").strip()
+SUPABASE_PUBLISHABLE_KEY = os.getenv("SUPABASE_PUBLISHABLE_KEY", "").strip()
+# Client libraries use a public key; keep the service role server-side and opt-in.
 SUPABASE_KEY = (
-    os.getenv("SUPABASE_SERVICE_ROLE_KEY", "").strip()
+    SUPABASE_ANON_KEY
+    or SUPABASE_PUBLISHABLE_KEY
     or os.getenv("SUPABASE_KEY", "").strip()
-    or os.getenv("SUPABASE_ANON_KEY", "").strip()
 )
 
 # Direct PostgreSQL connection (optional; useful for SQL access with your DB password)

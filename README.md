@@ -52,7 +52,7 @@ La app ya incluye `Procfile`, `runtime.txt` y `render.yaml`.
    - `DATABASE_URL` = pooler de Supabase (recomendado para Render/IPv4)
    - `DIRECT_DATABASE_URL` opcional
    - `SUPABASE_URL`
-   - `SUPABASE_KEY` / `SUPABASE_SERVICE_ROLE_KEY` (opcional, para sync REST)
+   - `SUPABASE_ANON_KEY` o `SUPABASE_PUBLISHABLE_KEY` para el cliente; reserva `SUPABASE_SERVICE_ROLE_KEY` para tareas privadas del servidor
 4. Render ejecutará `pip install -r requirements.txt` y luego:
 
    ```bash
@@ -63,7 +63,7 @@ La app ya incluye `Procfile`, `runtime.txt` y `render.yaml`.
 
 1. Crear un proyecto en Supabase.
 2. Ejecutar `supabase/schema.sql` en el SQL Editor.
-3. Copiar `SUPABASE_URL` y `SUPABASE_KEY` (service role recomendado para escritura) en `.env`.
+3. Copiar `SUPABASE_URL` y la llave `anon` o `publishable` en `.env`. Mantener `SUPABASE_SERVICE_ROLE_KEY` solo en el servidor y nunca en el frontend.
 4. `python -m src.train` sincroniza eventos y zonas de riesgo; la app guarda predicciones.
 
 La app funciona en modo offline si no hay credenciales.
